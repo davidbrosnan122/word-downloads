@@ -1,0 +1,89 @@
+name: Publish verified Word installers
+on:
+  push:
+    branches: ['publish/v0.6.2']
+permissions:
+  contents: write
+concurrency:
+  group: publish-word-0.6.2
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: davidbrosnan122/word-downloads
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Download and verify tested installer bundles
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import concurrent.futures, hashlib, json, pathlib, urllib.request, zipfile
+          # Short-lived links expose only the installers being published.
+          # No private source tree or repository token is transferred.
+          bundles = [{"name":"installers-linux-x64","url":"https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-4978-8210-b511-4f29e9d1212d/raw?se=2026-11-02T21%3A44%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=ceec7004-d989-4336-9aa7-9af8b949e0fb&skoid=e32cbaad-a1eb-4299-9f16-1b364ab43781&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T08%3A05%3A40Z&ske=2026-11-03T08%3A05%3A40Z&sks=b&skv=2026-02-06&sig=wqAxrbQV2r2sHDzTn/RFWFgRSBfr19v7/xSJDgBVWRQ%3D","digest":"sha256:4cf5a0ae16e3e72876f67e67615557fc6b0e2bb54b1dda0a6d5ebfc0edecf943"},{"name":"installers-win-x64","url":"https://sdmntprukwest.oaiusercontent.com/files/00000000-5ec8-8243-b5b4-cf35c09c1938/raw?se=2026-11-02T21%3A44%3A06Z&sp=r&sv=2026-02-06&sr=b&scid=a526bd0b-21d9-485e-bd4e-3e6966e4ee6e&skoid=e32cbaad-a1eb-4299-9f16-1b364ab43781&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T05%3A28%3A10Z&ske=2026-11-03T05%3A28%3A10Z&sks=b&skv=2026-02-06&sig=1m44HKpK5gv1xQwpg9gkaCcDSaXIdK2dmjrYfqXk3os%3D","digest":"sha256:fa79019b3df5eb4fee8de954f888e3e02eaf324cb75f92f056376572a902dab7"},{"name":"installers-mac-arm64","url":"https://sdmntprukwest.oaiusercontent.com/files/00000000-3d3c-8243-8c81-bc4b7bd8413a/raw?se=2026-11-02T21%3A44%3A21Z&sp=r&sv=2026-02-06&sr=b&scid=e75cb581-67d9-4f0e-b4e3-365a4d18e60f&skoid=e32cbaad-a1eb-4299-9f16-1b364ab43781&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T03%3A34%3A32Z&ske=2026-11-03T03%3A34%3A32Z&sks=b&skv=2026-02-06&sig=Yb6tW0E0Elu7UKGlh/Xwj%2BHDXhpY5sJZaZEixiA3pC4%3D","digest":"sha256:deafe7fe28aaefcd60a1979808b436c07de06c5ebf7e5f7bd0c16b2827ad61a2"},{"name":"installers-mac-x64","url":"https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-aee4-8210-81e6-24c64ad1ac5d/raw?se=2026-11-02T21%3A44%3A23Z&sp=r&sv=2026-02-06&sr=b&scid=d130227e-dcca-4f51-a01a-75cbd3014e3c&skoid=e32cbaad-a1eb-4299-9f16-1b364ab43781&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-11-02T08%3A32%3A20Z&ske=2026-11-03T08%3A32%3A20Z&sks=b&skv=2026-02-06&sig=hXPNdwHp/%2B96JJDbYJ8VwLj8mR7YM0EXr1p2po%2B6rcs%3D","digest":"sha256:0c575064ed06e014dbe9c4970d813b4ef47732b1851a989418ca98040adb1b9e"}]
+          expected = {
+            'Word-0.6.2-macOS-arm64.dmg','Word-0.6.2-macOS-arm64.zip',
+            'Word-0.6.2-macOS-x64.dmg','Word-0.6.2-macOS-x64.zip',
+            'Word-0.6.2-Windows-x64-Setup.exe',
+            'Word-0.6.2-Linux-x86_64.AppImage','Word-0.6.2-Linux-amd64.deb'
+          }
+          output=pathlib.Path('installers'); output.mkdir()
+          def fetch(bundle):
+              target=pathlib.Path(bundle['name']+'.zip')
+              urllib.request.urlretrieve(bundle['url'],target)
+              with target.open('rb') as stream:
+                  digest='sha256:'+hashlib.file_digest(stream,'sha256').hexdigest()
+              if digest!=bundle['digest']: raise RuntimeError('Artifact checksum mismatch')
+              with zipfile.ZipFile(target) as archive:
+                  names=archive.namelist()
+                  if not names or any(n not in expected or '/' in n or '\\' in n for n in names):
+                      raise RuntimeError('Unexpected artifact content')
+                  if any(archive.getinfo(n).file_size==0 for n in names): raise RuntimeError('Empty installer')
+                  archive.extractall(output)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              list(pool.map(fetch,bundles))
+          if {f.name for f in output.iterdir()}!=expected: raise RuntimeError('Incomplete installer set')
+          manifest={}
+          for name in sorted(expected):
+              with (output/name).open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+              manifest[name]={'sha256':digest,'size':(output/name).stat().st_size}
+          (output/'SHA256SUMS.txt').write_text(''.join(f'{item["sha256"]}  {name}\n' for name,item in manifest.items()))
+          pathlib.Path('manifest.json').write_text(json.dumps(manifest))
+          PY
+      - name: Publish complete release and verify uploaded digests
+        shell: bash
+        run: |
+          cat > notes.txt <<'NOTES'
+          Fixes colored text printing black, blurry or doubled. Color printing retains original glyph fills; black-and-white output retains sharp vector text.
+          
+          Includes rich HTML export, table selections, configurable cell splitting, whole-word replacement, selection printing and responsive zoom.
+          
+          Source commit e53384cadc909b72447f76bb0763c40a047ee349. All four native build hosts passed tests, color/grayscale PDF regression, packaging and packaged startup checks in source build run 41529034714.
+          
+          Windows x64; macOS Apple Silicon and Intel; Linux AppImage/DEB. Verify files against SHA256SUMS.txt. Windows builds are unsigned; macOS uses ad-hoc signatures and is not notarized.
+          Independent application; not affiliated with Microsoft. Physical printer output has not been tested.
+          NOTES
+          if ! gh release view v0.6.2 >/dev/null 2>&1; then
+            gh release create v0.6.2 --target "$GITHUB_SHA" --title "Word 0.6.2" --notes-file notes.txt --draft
+          fi
+          test "$(gh api repos/$GH_REPO/releases/tags/v0.6.2 --jq .draft)" = true
+          gh release upload v0.6.2 installers/* --clobber
+          gh api repos/$GH_REPO/releases/tags/v0.6.2 > release.json
+          python3 <<'PY'
+          import json,hashlib,pathlib
+          manifest=json.loads(pathlib.Path('manifest.json').read_text())
+          sums=pathlib.Path('installers/SHA256SUMS.txt')
+          manifest[sums.name]={'size':sums.stat().st_size,'sha256':hashlib.sha256(sums.read_bytes()).hexdigest()}
+          assets=json.loads(pathlib.Path('release.json').read_text())['assets']
+          if len(assets)!=8 or {a['name'] for a in assets}!=set(manifest): raise RuntimeError('Release asset set mismatch')
+          for asset in assets:
+              expected=manifest[asset['name']]
+              if asset['size']!=expected['size'] or asset.get('digest')!='sha256:'+expected['sha256']:
+                  raise RuntimeError('Uploaded asset digest mismatch')
+          PY
+          gh release edit v0.6.2 --draft=false --latest --notes-file notes.txt
